@@ -1,0 +1,11 @@
+NRRD0003
+# Complete NRRD file format specification at:
+# http://teem.sourceforge.net/nrrd/format.html
+type: double
+dimension: 3
+space dimension: 2
+sizes: 145 174 3
+kinds: domain domain vector 
+endian: little
+encoding: gzip
+data file: ./dti_all_tensor_rreg_60_2D.raw.gz

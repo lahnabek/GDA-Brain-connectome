@@ -1,0 +1,4 @@
+# Fichiers de données volumineux (IRM, diffusion, etc.)
+*.nii
+*.mha
+*.fib

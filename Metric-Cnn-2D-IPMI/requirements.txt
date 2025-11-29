@@ -1,0 +1,9 @@
+lazy_import==0.2.2
+matplotlib==3.3.1
+numba==0.55.1
+numpy==1.19.5
+PyYAML==6.0
+scikit_image==0.18.3
+SimpleITK==2.2.1
+torch==1.10.2
+tqdm==4.55.0

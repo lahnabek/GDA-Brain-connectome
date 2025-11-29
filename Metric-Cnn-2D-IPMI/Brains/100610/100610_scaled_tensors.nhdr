@@ -1,0 +1,13 @@
+NRRD0004
+# Complete NRRD file format specification at:
+# http://teem.sourceforge.net/nrrd/format.html
+type: double
+dimension: 3
+space dimension: 2
+sizes: 3 145 174
+space directions: none (1,0) (0,1)
+kinds: vector domain domain
+endian: little
+encoding: raw
+space origin: (0,0)
+data file: 100610_scaled_tensors.raw
