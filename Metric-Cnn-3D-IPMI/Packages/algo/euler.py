@@ -1,8 +1,8 @@
 from lazy_imports import np
 import math
-from util.tensors import *
-from util import riemann
-from data import io
+from Packages.util.tensors import *
+from Packages.util import riemann
+from Packages.data import io
 
 def get_vec_at_point_3d(x, y, z, vector_field, prev_angle):
   # return first and second component of eigenvector at a point, and associated angle

@@ -5,11 +5,11 @@ import math
 import time
 import gc
 
-from util import diff
-from util import tensors
-from util import maskops as mo
-from util.riemann import riem_vec_norm
-from data.convert import GetNPArrayFromSITK, GetSITKImageFromNP
+from Packages.util import diff
+from Packages.util import tensors
+from Packages.util import maskops as mo
+from Packages.util.riemann import riem_vec_norm
+from Packages.data.convert import GetNPArrayFromSITK, GetSITKImageFromNP
 
 # starting function will make a copy of the input data in order to keep the originals clean.
 
@@ -3029,6 +3029,8 @@ def Ax(x, args):
   return(lhs[args['mask']>0])
 
 # end Ax
+
+
 
 class gmres_iter_status(object):
     def __init__(self, disp=True):

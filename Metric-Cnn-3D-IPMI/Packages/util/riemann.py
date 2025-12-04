@@ -1,7 +1,7 @@
 from lazy_imports import np
 from lazy_imports import torch
-from util import diff
-from data.convert import get_framework
+from Packages.util import diff
+from Packages.data.convert import get_framework
 
 
 def get_christoffel_symbol_3d(metric_mat, mask, differential_accuracy=2):
@@ -110,6 +110,7 @@ def covariant_derivative_3d(vector_lin, metric_mat, mask, differential_accuracy=
     
     dvv = fw.zeros_like(vector_lin)
     dv = get_jacobian_3d(vector_lin, mask, differential_accuracy)
+    
     dvv = fw.einsum('...ij,j...->i...', dv, vector_lin)
     
     vgammav = fw.zeros_like(vector_lin)
@@ -125,3 +126,27 @@ def covariant_derivative_3d(vector_lin, metric_mat, mask, differential_accuracy=
     nabla_vv = dvv + vgammav
     
     return nabla_vv
+
+import numpy as np
+
+def riem_vec_norm(vec, g):
+    """
+    Normalise un champ de vecteurs 3D selon la métrique riemannienne g.
+    vec : (X,Y,Z,3)
+    g   : (X,Y,Z,3,3)
+    """
+    # produit riemannien v^T g v
+    vTgv = (vec[...,0] * (g[...,0,0]*vec[...,0] + g[...,0,1]*vec[...,1] + g[...,0,2]*vec[...,2]) +
+            vec[...,1] * (g[...,1,0]*vec[...,0] + g[...,1,1]*vec[...,1] + g[...,1,2]*vec[...,2]) +
+            vec[...,2] * (g[...,2,0]*vec[...,0] + g[...,2,1]*vec[...,1] + g[...,2,2]*vec[...,2]))
+
+    # éviter division par 0
+    vTgv[vTgv <= 1e-12] = 1e-12
+
+    norm = np.sqrt(vTgv)
+
+    out = np.zeros_like(vec)
+    out[...,0] = vec[...,0] / norm
+    out[...,1] = vec[...,1] / norm
+    out[...,2] = vec[...,2] / norm
+    return out

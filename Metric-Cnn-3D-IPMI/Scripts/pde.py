@@ -1,6 +1,6 @@
 import torch, sys
 sys.path.append('../Packages')
-from util import riemann
+from Packages.util import riemann
 
 def eigen_composite(u):
     theta = u[3].unsqueeze(-1).unsqueeze(-1)

@@ -2,3 +2,6 @@
 *.nii
 *.mha
 *.fib
+
+# Dossiers de checkpoints
+**/Checkpoints*/

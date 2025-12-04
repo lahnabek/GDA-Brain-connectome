@@ -1,5 +1,5 @@
 from lazy_imports import np, ndimage
-from data.convert import get_framework
+from Packages.data.convert import get_framework
 
 def is_interior_pt_2d(ii, jj, mask):
   if ((ii == 0) or (ii == mask.shape[0]-1) or

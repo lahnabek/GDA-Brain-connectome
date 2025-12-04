@@ -1,6 +1,6 @@
 from lazy_imports import np
-from util import maskops as mo
-from data.convert import get_framework
+from Packages.util import maskops as mo
+from Packages.data.convert import get_framework
 
 
 def get_first_order_derivative(tensor, direction, accuracy):

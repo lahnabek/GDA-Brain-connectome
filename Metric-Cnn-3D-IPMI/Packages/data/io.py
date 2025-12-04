@@ -1,9 +1,10 @@
 # data input/output helpers, includes conversion to/from various data formats
 # We heavily rely on lazy module loading here, put lazy-loaded modules in __init__.py
 # This way we don't load the module until it is actually used -- no sense loading SimpleITK or pytorch etc if a particular application does not use them.
+
 import os.path
 from lazy_imports import np, sitk, loadmat
-from util import YAMLcfg
+from Packages.util import YAMLcfg
 from . import nrrd
 from .convert import GetSITKImageFromNP, GetNPArrayFromSITK
 

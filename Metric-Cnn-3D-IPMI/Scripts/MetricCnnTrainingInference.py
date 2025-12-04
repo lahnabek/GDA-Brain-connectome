@@ -2,13 +2,14 @@ import os
 import sys
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-os.chdir(SCRIPT_DIR)  # change le dossier courant
-sys.path.insert(0, SCRIPT_DIR)
+PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
+os.chdir(SCRIPT_DIR)   # important : remet le working directory au dossier Scripts
 
-import torch, argparse
-sys.path.append('../Packages')
-import data.convert as convert
-import util.tensors as tensors
+sys.path.insert(0, PROJECT_ROOT)
+
+import torch, argparse, json, glob
+import Packages.data.convert as convert
+import Packages.util.tensors as tensors
 import SimpleITK as sitk
 import numpy as np
 from torch.utils.data import DataLoader
@@ -16,29 +17,83 @@ from tqdm import tqdm
 from dataset import DatasetHCP
 from pde import *
 from model3D import *
-
-# ----------- CONFIG DIRECTE DANS LE CODE -------------
-
-brain_id = "111312"                # ce que tu veux
-input_dir = "../Brains"            # chemin où tu as mis les données
-output_dir = "../Checkpoints"
-gpu_device = -1                    # CPU sur Mac donc pas utilisé
-epoch_num = 20                    # ou None pour valeur par défaut
-learning_rate = 1e-3               # ou None
+import matplotlib.pyplot as plt
+import pandas as pd
+# ----------- CONFIG -------------
+brain_id = "111312"
+input_dir = "../Brains"
+output_dir = "../Checkpoints_40_30_40"
+gpu_device = -1
+epoch_num = 50 #10000
+learning_rate = 1e-3
 terminating_loss = 1e6
 checkpoint_save_frequency = 5
-BLOCKS = [40,30,40] # [40,30,40] dans l'article
-# ------------------------------------------------------
+RESUME = False
+BLOCKS = [40,30,40] # [40,30,40]
+# --------------------------------
+
+def plot_loss():
+        # ---------------------------------------------------------------------
+    #  ENREGISTREMENT DE LA COURBE DE LOSS (FIGURE PUBLIABLE)
+    # ---------------------------------------------------------------------
+    
+
+    figures_dir = f"{output_dir}/figures"
+    os.makedirs(figures_dir, exist_ok=True)
+
+    # Charger le CSV des pertes
+    loss_df = pd.read_csv(f"{output_dir}/{brain_id}/loss.csv")
+
+    # Style publication
+    plt.style.use("seaborn-v0_8-whitegrid")
+
+    fig, ax = plt.subplots(figsize=(8,5), dpi=150)
+
+    ax.plot(loss_df["epoch"], loss_df["loss"], linewidth=2, color="royalblue")
+
+    ax.set_xlabel("Epoch", fontsize=13)
+    ax.set_ylabel("Loss", fontsize=13)
+    ax.set_title(
+        f"Training Loss — brain {brain_id}\n"
+        f"epochs={loss_df['epoch'].iloc[-1]} | lr={learning_rate} | blocks={BLOCKS}",
+        fontsize=14,
+        pad=10
+    )
+
+    ax.tick_params(labelsize=11)
+    ax.grid(True, alpha=0.3)
+
+    fig.tight_layout()
+
+    fig.savefig(f"{figures_dir}/loss_curve.png", dpi=300)
+    plt.close(fig)
+    
 
 
-def train(brain_id, input_dir, output_dir, gpu_device=0, epoch_num=10000, learning_rate=1e-4, terminating_loss=1e6, checkpoint_save_frequency=1000):
-    # torch.cuda.set_device(gpu_device)
-    # torch.set_default_tensor_type('torch.cuda.FloatTensor')
+
+def train(brain_id, input_dir, output_dir, gpu_device=0, epoch_num=10000, learning_rate=1e-4,
+          terminating_loss=1e6, checkpoint_save_frequency=1000, resume=RESUME):
+
     device = torch.device("cpu")
 
     output_dir = f'{output_dir}/{brain_id}'
     if not os.path.isdir(output_dir):
-        os.mkdir(output_dir)
+        os.makedirs(output_dir)
+
+    metrics_dir = f"{output_dir}/metrics"
+    os.makedirs(metrics_dir, exist_ok=True)   # dossier où on enregistrera toutes les métriques (intermédiaires)
+
+    # --- save config ---
+    config_file = os.path.join(output_dir, "training_config.json")
+    with open(config_file, "w") as f:
+        json.dump({
+            "brain_id": brain_id,
+            "epochs": epoch_num,
+            "learning_rate": learning_rate,
+            "checkpoint_frequency": checkpoint_save_frequency,
+            "blocks": BLOCKS,
+            "resume": resume,
+        }, f, indent=2)
 
     blocks = BLOCKS
     model = DenseED(in_channels=3, out_channels=7, 
@@ -49,9 +104,8 @@ def train(brain_id, input_dir, output_dir, gpu_device=0, epoch_num=10000, learni
                     drop_rate=0,
                     out_activation=None,
                     upsample='nearest')
-                    
+
     model.train()
-    # model.cuda()
     model = model.to(device)
     
     criterion = torch.nn.MSELoss()
@@ -60,11 +114,41 @@ def train(brain_id, input_dir, output_dir, gpu_device=0, epoch_num=10000, learni
     dataset_id = DatasetHCP(input_dir, sample_name_list=[str(brain_id)])
     dataloader_id = DataLoader(dataset_id, batch_size=1, shuffle=False, num_workers=0)
 
-    with open(f'{output_dir}/loss.txt', 'w+') as f:
-        f.write(f'Architecture {blocks}\n')
-        f.write(f'Adadelta: lr={learning_rate};\n')
+    # --- loss CSV ---
+    loss_csv_path = os.path.join(output_dir, "loss.csv")
+    if not (resume and os.path.isfile(loss_csv_path)):
+        # (ré)initialise le fichier de pertes uniquement si on ne reprend pas
+        with open(loss_csv_path, 'w') as f:
+            f.write("epoch,loss\n")
 
-    for epoch in tqdm(range(epoch_num)):
+    # --- load inputs once ---
+    vec_path = f'{input_dir}/{brain_id}/{brain_id}_shrinktensor_principal_vector_field.nhdr'
+    mask_path = f'{input_dir}/{brain_id}/{brain_id}_shrinktensor_filt_mask.nhdr'
+    base_vector = convert.read_nhdr(vec_path).to(device).float()
+    base_mask   = convert.read_nhdr(mask_path).to(device).float()
+
+    # --- reprise depuis le dernier checkpoint éventuel ---
+    start_epoch = 0
+    last_loss = None
+    if resume:
+        ckpt_pattern = os.path.join(output_dir, "checkpoint_epoch_*.pth.tar")
+        ckpt_files = sorted(glob.glob(ckpt_pattern))
+        if ckpt_files:
+            # on prend le dernier checkpoint en se basant sur le nom
+            last_ckpt = ckpt_files[-1]
+            print(f"[resume] Chargement du checkpoint : {last_ckpt}")
+            checkpoint = torch.load(last_ckpt, map_location=device)
+            model.load_state_dict(checkpoint['model_state_dict'])
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            start_epoch = int(checkpoint.get('epoch', 0)) + 1
+            last_loss = checkpoint.get('loss', None)
+            print(f"[resume] Reprise à l'epoch {start_epoch} (loss précédente={last_loss})")
+        else:
+            print("[resume] Aucun checkpoint trouvé, entraînement à partir de zéro.")
+
+    last_epoch = start_epoch - 1
+
+    for epoch in tqdm(range(start_epoch, epoch_num)):
         epoch_loss_id = 0
 
         for i, batched_id_sample in enumerate(dataloader_id):
@@ -83,79 +167,78 @@ def train(brain_id, input_dir, output_dir, gpu_device=0, epoch_num=10000, learni
             loss_id.backward()
             optimizer.step()
             epoch_loss_id += loss_id.item()
+
         scheduler.step(epoch_loss_id)
 
-        with open(f'{output_dir}/loss.txt', 'a') as f:
-            f.write(f'{epoch_loss_id}\n')
-  
-        if epoch%checkpoint_save_frequency==0:
-            torch.save({
-            'epoch': epoch,
-            'model_state_dict': model.state_dict(),
-            'optimizer_id_state_dict': optimizer.state_dict(),
-            'loss_id': epoch_loss_id,
-            }, f'{output_dir}/model.pth.tar')
+        last_epoch = epoch
 
-        if epoch_loss_id<terminating_loss:
+        # write loss
+        with open(loss_csv_path, 'a') as f:
+            f.write(f"{epoch},{epoch_loss_id}\n")
+
+        # --- save intermediate checkpoints ---
+        if epoch % checkpoint_save_frequency == 0:
+            ckpt_path = f'{output_dir}/checkpoint_epoch_{epoch:04d}.pth.tar'
             torch.save({
-            'epoch': epoch,
-            'model_state_dict': model.state_dict(),
-            'optimizer_id_state_dict': optimizer.state_dict(),
-            'loss_id': epoch_loss_id,
-            }, f'{output_dir}/model.pth.tar')
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'loss': epoch_loss_id,
+                'config': {
+                    "learning_rate": learning_rate,
+                    "blocks": BLOCKS,
+                    "epoch": epoch
+                }
+            }, ckpt_path)
+
+            # --- save the metric tensor at this epoch ---
+            with torch.no_grad():
+                u_pred = model(base_vector.unsqueeze(0)).squeeze()
+                metric_mat = eigen_composite(u_pred)
+                metric_lin = tensors.mat2lin(metric_mat)
+                np_metric = metric_lin.cpu().numpy()
+                np_metric = np.transpose(metric_lin.detach().cpu().numpy(), (3,2,1,0))
+
+                sitk.WriteImage(sitk.GetImageFromArray(np_metric),
+                                f"{metrics_dir}/metric_epoch_{epoch:04d}.nhdr")
+
+        # stop
+        if epoch_loss_id < terminating_loss:
             break
-            
     
-    checkpoint = torch.load(f'{output_dir}/model.pth.tar', map_location=device)
-    model = DenseED(in_channels=3, out_channels=7, 
-                    imsize=100,
-                    blocks=blocks,
-                    growth_rate=16, 
-                    init_features=48,
-                    drop_rate=0,
-                    out_activation=None,
-                    upsample='nearest')
-    model.load_state_dict(checkpoint['model_state_dict'])
-    model = model.to(device)
+    # Si aucune epoch n'a été faite (start_epoch >= epoch_num), on essaie de récupérer la dernière loss connue
+    if start_epoch >= epoch_num:
+        epoch_loss_id = last_loss if last_loss is not None else 0.0
 
-    vector_lin = convert.read_nhdr(f'{input_dir}/{brain_id}/{brain_id}_shrinktensor_principal_vector_field.nhdr')
-    mask = convert.read_nhdr(f'{input_dir}/{brain_id}/{brain_id}_shrinktensor_filt_mask.nhdr')
+    # --- final model ---
+    final_ckpt = f'{output_dir}/model_final.pth.tar'
+    torch.save({
+        'epoch': last_epoch,
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'loss': epoch_loss_id,
+        'config': {
+            "learning_rate": learning_rate,
+            "blocks": BLOCKS,
+            "epoch": last_epoch
+        }
+    }, final_ckpt)
 
-    vector_lin = vector_lin.to(device).float()
-    mask = mask.to(device).float()
+    # save final metric
+    u_pred = model(base_vector.unsqueeze(0)).squeeze()
+    metric_mat = eigen_composite(u_pred)
+    metric_lin = tensors.mat2lin(metric_mat)
+    np_metric = np.transpose(metric_lin.detach().cpu().numpy(), (3,2,1,0))
 
-    u_pred = model(vector_lin.unsqueeze(0))
-    u_pred = u_pred.squeeze()
+    sitk.WriteImage(sitk.GetImageFromArray(np_metric),
+                    f"{metrics_dir}/metric_final.nhdr") # tensor_lin pour geodesic ?
+    plot_loss()
 
-    metric_pred_mat = eigen_composite(u_pred)
-    metric_pred_lin = tensors.mat2lin(metric_pred_mat)
-    tensor_pred_mat = torch.inverse(metric_pred_mat)
-    tensor_pred_lin = tensors.mat2lin(tensor_pred_mat)
 
-    file_name = f'{output_dir}/{brain_id}_learned_metric_final.nhdr'
-    sitk.WriteImage(sitk.GetImageFromArray(np.transpose(metric_pred_lin.cpu().detach().numpy(),(3,2,1,0))), file_name)
+# run
+if __name__ == '__main__':
 
-"""parser = argparse.ArgumentParser()
-parser.add_argument('--brain_id', type=str, required=True, help='the HCP subject ID')
-parser.add_argument('--input_dir', type=str, required=True, help='path to the brain data')
-parser.add_argument('--output_dir', type=str, required=True, help='path to model checkpoint')
-parser.add_argument('--gpu_device', type=int, required=True, help='an integer for the accumulator')
-parser.add_argument('--epoch_num', type=int, required=False, help='total epochs for training')
-parser.add_argument('--learning_rate', type=float, required=False, help='initial learning rate of model')
-parser.add_argument('--terminating_loss', type=float, required=False, help='loss threshold for termination')
-parser.add_argument('--checkpoint_save_frequency', type=int, required=False, help='frequency of checkpoint save')
-args = parser.parse_args()
+    train(brain_id, input_dir, output_dir, gpu_device, epoch_num, learning_rate,
+          terminating_loss, checkpoint_save_frequency, resume=RESUME)
 
-train(brain_id=args.brain_id, input_dir=args.input_dir, output_dir=args.output_dir, gpu_device=args.gpu_device, epoch_num=args.epoch_num, learning_rate=args.learning_rate, terminating_loss=args.terminating_loss, checkpoint_save_frequency=args.checkpoint_save_frequency)
-"""
 
-train(
-    brain_id=brain_id,
-    input_dir=input_dir,
-    output_dir=output_dir,
-    gpu_device=gpu_device,
-    epoch_num=epoch_num,
-    learning_rate=learning_rate,
-    terminating_loss=terminating_loss,
-    checkpoint_save_frequency=checkpoint_save_frequency
-)

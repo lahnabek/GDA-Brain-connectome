@@ -6,7 +6,7 @@ PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
 os.chdir(SCRIPT_DIR)
 
 sys.path.insert(0, PROJECT_ROOT)
-
+import torch
 import glob
 import SimpleITK as sitk
 import numpy as np
@@ -15,7 +15,7 @@ import Packages.data.convert as convert
 from Packages.util import tensors
 from Packages.algo.geodesic import geodesicpath_3d
 from Packages.algo.metricModSolver import solve_3d  
-
+from Packages.util.riemann import covariant_derivative_3d
 
 
 def select_seeded_mask_point(mask, seed=0, margin=2):
@@ -546,6 +546,331 @@ def analyze_metric_field(metrics_dir, mask_path=None):
     }
 
 
+def plot_metric_eigs_on_slice(metrics_dir,
+                              mask_path,
+                              axis="z",
+                              slice_index=None,
+                              vmin=None,
+                              vmax=None):
+    """
+    Figure (idée 1) : cartes 2D des valeurs propres de g (lambda_min, lambda_max)
+    et du conditionnement cond = lambda_max / lambda_min sur une coupe.
+    """
+    # choisir fichier métrique
+    metric_final = os.path.join(metrics_dir, "metric_final.nhdr")
+    if os.path.isfile(metric_final):
+        metric_file = metric_final
+    else:
+        files = sorted(glob.glob(os.path.join(metrics_dir, "metric_epoch_*.nhdr")))
+        if not files:
+            raise RuntimeError(f"Aucun metric_*.nhdr trouvé dans {metrics_dir}")
+        metric_file = files[-1]
+
+    print(f"[plot_metric_eigs_on_slice] Fichier utilisé : {metric_file}")
+
+    metric_lin = convert.read_nhdr(metric_file).cpu().numpy()
+    if metric_lin.shape[-1] == 6:
+        metric_6 = metric_lin
+    elif metric_lin.shape[0] == 6:
+        metric_6 = np.transpose(metric_lin, (1, 2, 3, 0))
+    else:
+        raise ValueError(f"Forme inattendue pour metric_lin: {metric_lin.shape}")
+
+    metric_3x3 = tensors.tens_6_to_tens_3x3(metric_6)  # (X,Y,Z,3,3)
+    X, Y, Z = metric_3x3.shape[:3]
+
+    mask = convert.read_nhdr(mask_path).cpu().numpy().astype(bool)
+    if mask.shape != (X, Y, Z):
+        raise ValueError(f"Dimensions masque {mask.shape} != métrique {metric_3x3.shape[:3]}")
+
+    # choisir slice
+    if slice_index is None:
+        slice_index = {"x": X // 2, "y": Y // 2, "z": Z // 2}[axis]
+
+    if axis == "z":
+        sl_g = metric_3x3[:, :, slice_index, :, :]
+        sl_mask = mask[:, :, slice_index]
+    elif axis == "y":
+        sl_g = metric_3x3[:, slice_index, :, :, :]
+        sl_mask = mask[:, slice_index, :]
+    else:  # 'x'
+        sl_g = metric_3x3[slice_index, :, :, :, :]
+        sl_mask = mask[slice_index, :, :]
+
+    # valeurs propres pour la slice
+    flat = sl_g.reshape(-1, 3, 3)
+    eigvals, _ = np.linalg.eigh(flat)
+    eigvals = np.sort(eigvals, axis=1)
+    lam_min = eigvals[:, 0].reshape(sl_mask.shape)
+    lam_max = eigvals[:, 2].reshape(sl_mask.shape)
+    cond = lam_max / (lam_min + 1e-8)
+
+    # masquage pour l'affichage
+    lam_min_disp = np.where(sl_mask, lam_min, np.nan)
+    lam_max_disp = np.where(sl_mask, lam_max, np.nan)
+    cond_disp = np.where(sl_mask, cond, np.nan)
+
+    fig, axes = plt.subplots(1, 3, figsize=(12, 4), sharex=True, sharey=True)
+    ims = []
+    ims.append(axes[0].imshow(lam_min_disp.T, origin="lower", cmap="viridis", vmin=vmin, vmax=vmax))
+    axes[0].set_title(r"$\lambda_{\min}$")
+    ims.append(axes[1].imshow(lam_max_disp.T, origin="lower", cmap="viridis", vmin=vmin, vmax=vmax))
+    axes[1].set_title(r"$\lambda_{\max}$")
+    ims.append(axes[2].imshow(cond_disp.T, origin="lower", cmap="magma"))
+    axes[2].set_title(r"$\lambda_{\max} / \lambda_{\min}$")
+
+    for ax in axes:
+        ax.set_aspect("equal")
+
+    fig.colorbar(ims[0], ax=axes[0], fraction=0.046, pad=0.04)
+    fig.colorbar(ims[1], ax=axes[1], fraction=0.046, pad=0.04)
+    fig.colorbar(ims[2], ax=axes[2], fraction=0.046, pad=0.04)
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_loss_vs_anisotropy(checkpoint_dir,
+                            subject_id="111312",
+                            mask_path=None):
+    """
+    Figure (idée 3) : courbe de loss vs un indicateur global d'anisotropie
+    (moyenne de cond = lambda_max / lambda_min sur tout le cerveau) au cours du training.
+
+    On suppose :
+      - loss.csv dans checkpoint_dir/subject_id/
+      - metrics dans checkpoint_dir/subject_id/metrics/metric_epoch_XXXX.nhdr
+    """
+    subj_dir = os.path.join(checkpoint_dir, subject_id)
+    loss_csv = os.path.join(subj_dir, "loss.csv")
+    metrics_dir = os.path.join(subj_dir, "metrics")
+
+    if not os.path.isfile(loss_csv):
+        raise FileNotFoundError(loss_csv)
+    if not os.path.isdir(metrics_dir):
+        raise FileNotFoundError(metrics_dir)
+
+    # loss
+    import pandas as pd
+    df = pd.read_csv(loss_csv)
+    epochs_loss = df["epoch"].to_numpy()
+    losses = df["loss"].to_numpy()
+
+    # metrics per epoch
+    metric_files = sorted(glob.glob(os.path.join(metrics_dir, "metric_epoch_*.nhdr")))
+    if not metric_files:
+        raise RuntimeError(f"Aucun metric_epoch_*.nhdr dans {metrics_dir}")
+
+    # optionnel : masque
+    if mask_path is not None:
+        mask = convert.read_nhdr(mask_path).cpu().numpy().astype(bool)
+    else:
+        mask = None
+
+    epochs_cond = []
+    mean_cond = []
+
+    for f in metric_files:
+        name = os.path.basename(f)
+        # extraire epoch dans metric_epoch_XXXX.nhdr
+        try:
+            e = int(name.split("_")[-1].split(".")[0])
+        except Exception:
+            continue
+
+        metric_lin = convert.read_nhdr(f).cpu().numpy()
+        if metric_lin.shape[-1] == 6:
+            metric_6 = metric_lin
+        elif metric_lin.shape[0] == 6:
+            metric_6 = np.transpose(metric_lin, (1, 2, 3, 0))
+        else:
+            continue
+        metric_3x3 = tensors.tens_6_to_tens_3x3(metric_6)
+        flat = metric_3x3.reshape(-1, 3, 3)
+        eigvals, _ = np.linalg.eigh(flat)
+        eigvals = np.sort(eigvals, axis=1)
+        lam_min = eigvals[:, 0]
+        lam_max = eigvals[:, 2]
+        cond = lam_max / (lam_min + 1e-8)
+
+        if mask is not None:
+            if mask.shape != metric_3x3.shape[:3]:
+                raise ValueError("mask et métrique incompatibles")
+            cond = cond[mask.reshape(-1)]
+
+        epochs_cond.append(e)
+        mean_cond.append(cond.mean())
+
+    epochs_cond = np.array(epochs_cond)
+    mean_cond = np.array(mean_cond)
+
+    # tri par epoch
+    order = np.argsort(epochs_cond)
+    epochs_cond = epochs_cond[order]
+    mean_cond = mean_cond[order]
+
+    fig, ax1 = plt.subplots(figsize=(7,4))
+    ax1.plot(epochs_loss, losses, "-b", label="loss")
+    ax1.set_xlabel("epoch")
+    ax1.set_ylabel("loss", color="b")
+    ax1.tick_params(axis="y", labelcolor="b")
+
+    ax2 = ax1.twinx()
+    ax2.plot(epochs_cond, mean_cond, "-r", label="mean cond")
+    ax2.set_ylabel("mean cond(lambda_max/lambda_min)", color="r")
+    ax2.tick_params(axis="y", labelcolor="r")
+
+    fig.tight_layout()
+    plt.title("Loss vs anisotropie moyenne de la métrique")
+    plt.show()
+
+
+def plot_covariant_error_on_slice(metric_file,
+                                  vector_path,
+                                  mask_path,
+                                  axis="z",
+                                  slice_index=None):
+    """
+    Figure (idée 5) : carte 2D de l'erreur géométrique locale
+      e(x) = || nabla_v v || (norme euclidienne)
+    pour un champ de vecteurs v indépendant de la métrique.
+    """
+    # charger métrique
+    metric_lin = convert.read_nhdr(metric_file)
+    metric_np = metric_lin.cpu().numpy()
+    if metric_np.shape[-1] == 6:
+        metric_6 = metric_np
+    elif metric_np.shape[0] == 6:
+        metric_6 = np.transpose(metric_np, (1, 2, 3, 0))
+    else:
+        raise ValueError(f"Forme inattendue métrique: {metric_np.shape}")
+    metric_3x3 = tensors.tens_6_to_tens_3x3(metric_6)  # (X,Y,Z,3,3)
+
+    
+    # charger champ de vecteurs (on suppose (3,X,Y,Z))
+    vec = convert.read_nhdr(vector_path)
+    vector_lin = vec.cpu().to(dtype=torch.float32)
+
+    # charger masque
+    mask_t = convert.read_nhdr(mask_path).cpu().to(dtype=torch.float32)
+
+    # mettre métrique en torch pour riemann
+    g_torch = torch.from_numpy(metric_3x3).to(dtype=torch.float32)
+    # riemann.covariant_derivative_3d attend metric_mat shape [h,w,d,3,3] et vector_lin [3,h,w,d]
+    nabla_vv = covariant_derivative_3d(vector_lin, g_torch, mask_t, differential_accuracy=2)
+    # norme euclidienne
+    e = torch.sqrt((nabla_vv ** 2).sum(dim=0)).cpu().numpy()  # (X,Y,Z)
+
+    X, Y, Z = e.shape
+    if slice_index is None:
+        slice_index = {"x": X // 2, "y": Y // 2, "z": Z // 2}[axis]
+
+    if axis == "z":
+        sl = e[:, :, slice_index]
+    elif axis == "y":
+        sl = e[:, slice_index, :]
+    else:
+        sl = e[slice_index, :, :]
+
+    fig, ax = plt.subplots(figsize=(5,5))
+    im = ax.imshow(sl.T, origin="lower", cmap="magma")
+    ax.set_title(r"$\| \nabla_v v \|$ sur une coupe")
+    ax.set_aspect("equal")
+    fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    plt.tight_layout()
+    plt.show()
+
+
+def compare_baseline_metrics_on_slice(orig_tensor_path,
+                                      cnn_metric_path,
+                                      mask_path,
+                                      axis="z",
+                                      slice_index=None):
+    """
+    Figure (idée 6) : comparer conditionnement de la métrique pour
+      - identité
+      - métrique issue des tenseurs originaux (diffusion brute)
+      - métrique CNN (metric_final)
+    via cond = lambda_max/lambda_min sur une coupe.
+    """
+    # identité
+    mask = convert.read_nhdr(mask_path).cpu().numpy().astype(bool)
+    X, Y, Z = mask.shape
+    id_g = np.zeros((X, Y, Z, 3, 3))
+    id_g[..., 0, 0] = 1.0
+    id_g[..., 1, 1] = 1.0
+    id_g[..., 2, 2] = 1.0
+
+    # métrique diffusion brute
+    orig_lin = convert.read_nhdr(orig_tensor_path).cpu().numpy()
+    if orig_lin.shape[-1] == 6:
+        orig_6 = orig_lin
+    elif orig_lin.shape[0] == 6:
+        orig_6 = np.transpose(orig_lin, (1, 2, 3, 0))
+    else:
+        raise ValueError(f"Forme inattendue orig_lin: {orig_lin.shape}")
+    orig_g = tensors.tens_6_to_tens_3x3(orig_6)
+
+    # métrique CNN
+    cnn_lin = convert.read_nhdr(cnn_metric_path).cpu().numpy()
+    if cnn_lin.shape[-1] == 6:
+        cnn_6 = cnn_lin
+    elif cnn_lin.shape[0] == 6:
+        cnn_6 = np.transpose(cnn_lin, (1, 2, 3, 0))
+    else:
+        raise ValueError(f"Forme inattendue cnn_lin: {cnn_lin.shape}")
+    cnn_g = tensors.tens_6_to_tens_3x3(cnn_6)
+
+    def cond_field(g):
+        flat = g.reshape(-1, 3, 3)
+        eigvals, _ = np.linalg.eigh(flat)
+        eigvals = np.sort(eigvals, axis=1)
+        lam_min = eigvals[:, 0]
+        lam_max = eigvals[:, 2]
+        cond = lam_max / (lam_min + 1e-8)
+        return cond.reshape(X, Y, Z)
+
+    cond_id = cond_field(id_g)
+    cond_orig = cond_field(orig_g)
+    cond_cnn = cond_field(cnn_g)
+
+    if slice_index is None:
+        slice_index = Z // 2
+
+    if axis == "z":
+        s_id = cond_id[:, :, slice_index]
+        s_orig = cond_orig[:, :, slice_index]
+        s_cnn = cond_cnn[:, :, slice_index]
+    elif axis == "y":
+        s_id = cond_id[:, slice_index, :]
+        s_orig = cond_orig[:, slice_index, :]
+        s_cnn = cond_cnn[:, slice_index, :]
+    else:
+        s_id = cond_id[slice_index, :, :]
+        s_orig = cond_orig[slice_index, :, :]
+        s_cnn = cond_cnn[slice_index, :, :]
+
+    s_id = np.where(mask.take(indices=slice_index, axis="xyz".index(axis)), s_id, np.nan)
+    s_orig = np.where(mask.take(indices=slice_index, axis="xyz".index(axis)), s_orig, np.nan)
+    s_cnn = np.where(mask.take(indices=slice_index, axis="xyz".index(axis)), s_cnn, np.nan)
+
+    fig, axes = plt.subplots(1, 3, figsize=(12,4), sharex=True, sharey=True)
+    im0 = axes[0].imshow(s_id.T, origin="lower", cmap="viridis")
+    axes[0].set_title("cond(I)")
+    im1 = axes[1].imshow(s_orig.T, origin="lower", cmap="viridis")
+    axes[1].set_title("cond(diffusion brute)")
+    im2 = axes[2].imshow(s_cnn.T, origin="lower", cmap="viridis")
+    axes[2].set_title("cond(métrique CNN)")
+
+    for ax in axes:
+        ax.set_aspect("equal")
+
+    fig.colorbar(im0, ax=axes[0], fraction=0.046, pad=0.04)
+    fig.colorbar(im1, ax=axes[1], fraction=0.046, pad=0.04)
+    fig.colorbar(im2, ax=axes[2], fraction=0.046, pad=0.04)
+    plt.tight_layout()
+    plt.show()
+
+
 def debug_TDir(metrics_dir,
                mask_path,
                axis="z",
@@ -712,14 +1037,18 @@ if __name__ == "__main__":
         DIR = True
     )"""
 
-    plot_geodesics_on_slice_from_checkpoints(
+    """plot_geodesics_on_slice_from_checkpoints(
     metrics_dir="../Checkpoints_10_10_10/111312/metrics",
     mask_path="../Brains/111312/111312_shrinktensor_filt_mask.nhdr",
+    vector_path="../Brains/111312/111312_shrinktensor_principal_vector_field.nhdr",
     seed_start_point =5,
     axis="z",             # 'x', 'y' ou 'z'
     slice_index=None,
     num_intermediate=3,
-    )
+    zoom=False,
+    zoom_size=10,
+    iter_num=8000,
+    )"""
     
     """analyze_metric_field("../Checkpoints_10_10_10/111312/metrics",
      mask_path="../Brains/111312/111312_shrinktensor_filt_mask.nhdr")"""
@@ -730,3 +1059,18 @@ if __name__ == "__main__":
                slice_index=None,
                quiver_step=3,
                arrow_len=2.0)"""
+
+    """plot_metric_eigs_on_slice(metrics_dir="../Checkpoints_10_10_10/111312/metrics",
+                              mask_path="../Brains/111312/111312_shrinktensor_filt_mask.nhdr",
+                              axis="z",
+                              slice_index=None)"""
+
+    """plot_loss_vs_anisotropy(checkpoint_dir="../Checkpoints_10_10_10",
+                            subject_id="111312",
+                            mask_path="../Brains/111312/111312_shrinktensor_filt_mask.nhdr")"""
+
+    plot_covariant_error_on_slice(metric_file="../Checkpoints_10_10_10/111312/metrics/metric_final.nhdr",
+                                  vector_path="../Brains/111312/111312_shrinktensor_principal_vector_field.nhdr",
+                                  mask_path="../Brains/111312/111312_shrinktensor_filt_mask.nhdr",
+                                  axis="z",
+                                  slice_index=None)

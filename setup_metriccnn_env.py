@@ -19,7 +19,8 @@ PACKAGES = [
     "nibabel",
     "itkwidgets",
     "pyvista",
-    "nilearn"
+    "nilearn",
+    "lazy_imports"
 ]
 
 def run(cmd, fail_ok=False):

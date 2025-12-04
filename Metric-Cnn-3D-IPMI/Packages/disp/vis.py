@@ -1,5 +1,6 @@
 # for data vis methods
 # When using itkwidgets, must import itk directly.  It doesn't play nice with lazy_imports
+
 import itk
 from lazy_imports import sitk, np, linalg
 from lazy_imports import plt, PatchCollection, Ellipse, EllipseCollection
@@ -8,11 +9,11 @@ from lazy_imports import itkview #itkwidgets.view
 from lazy_imports import pv # pyvista
 from lazy_imports import interactive
 from lazy_imports import ipywidgets
-from data.convert import GetSITKImageFromNP, GetNPArrayFromSITK, GetNPArrayViewFromSITK
-from data.io import readRaw
+from Packages.data.convert import GetSITKImageFromNP, GetNPArrayFromSITK, GetNPArrayViewFromSITK
+from Packages.data.io import readRaw
 
-import algo.geodesic as geo
-import algo.euler as euler
+import Packages.algo.geodesic as geo
+import Packages.algo.euler as euler
 
 # TODO worth breaking into separate files based on image type?
 #      ie vis_sitk.py, vis_np.py etc?
@@ -105,6 +106,7 @@ def show_2d(img, title=None, margin=0.05, dpi=80, has_component_data=False):
   
   if(title):
     plt.title(title)
+  plt.show()
 
 def show_2d_tensors(img, scale=1, title=None, margin=0.05, dpi=80, has_component_data=False):
   if type(img) == np.ndarray:
@@ -124,7 +126,7 @@ def show_2d_tensors(img, scale=1, title=None, margin=0.05, dpi=80, has_component
     # take a z-slice
     #nda = nda[nda.shape[0]//2,:,:,:]
     #nda = nda[nda.shape[0]//2,:,:]
-          
+         
   xsize = nda.shape[0]
   ysize = nda.shape[1]
     
@@ -173,6 +175,7 @@ def show_2d_tensors(img, scale=1, title=None, margin=0.05, dpi=80, has_component
   
   if(title):
     plt.title(title)
+  plt.show()
   # For some reason, returning the fig causes it to appear twice in jupyter notebook
   #return(fig)
 

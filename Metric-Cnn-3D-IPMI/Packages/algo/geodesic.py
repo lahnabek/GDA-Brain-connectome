@@ -1,9 +1,11 @@
+
+
 import math
-from util.tensors import *
+from Packages.util.tensors import *
 from lazy_imports import np
 from lazy_imports import torch
-from util import diff, maskops, riemann, tensors
-from data import io
+from Packages.util import diff, maskops, riemann, tensors
+from Packages.data import io
 
 from numba import jit
 # uncomment this for legit @profile when not using kernprof
@@ -187,11 +189,11 @@ def geodesicpath_3d(tensor_lin, vector_lin, mask_image, start_coordinate, initia
   geodesicpath_points_x = np.zeros((iter_num-2))
   geodesicpath_points_y = np.zeros((iter_num-2))
   geodesicpath_points_z = np.zeros((iter_num-2))
-
+  #print("gx en zeros nomalement, la shape",geodesicpath_points_x.shape)
   init_v = initial_velocity
   if initial_velocity is None:
-    init_v = direction_3d(start_coordinate, tensor_field)
-
+    init_v = direction_3d(start_coordinate, tensor_lin)
+  #print("init_v :", init_v)
   if both_directions:
     back_x, back_y, back_z = geodesicpath_3d(tensor_lin, vector_lin, mask_image, start_coordinate,
                                              -init_v, delta_t, iter_num, stop_angle, filename, both_directions=False)
@@ -199,14 +201,19 @@ def geodesicpath_3d(tensor_lin, vector_lin, mask_image, start_coordinate, initia
   print(f"Finding geodesic path from {start_coordinate} with initial velocity {init_v}")
 
   tensor_mat = lin2mat(tensor_lin)
+  #print("tensor_mat :", tensor_mat)
   metric_mat = np.linalg.inv(tensor_mat)
+  #print("metric_mat :", metric_mat)
   Gamma1, Gamma2, Gamma3 = riemann.get_christoffel_symbol_3d(metric_mat, mask_image)
+  #print("Gamma 1", Gamma1.shape, Gamma1)
   nabla_vv = riemann.covariant_derivative_3d(vector_lin, metric_mat, mask_image)
+  #print("nabla_vv :", nabla_vv)
   sigma = ((vector_lin[0]*nabla_vv[0]+vector_lin[1]*nabla_vv[1]+vector_lin[2]*nabla_vv[2])/(vector_lin[0]**2+vector_lin[1]**2+vector_lin[2]**2+1e-2))
   sigmav = np.zeros_like(vector_lin)
   sigmav[0] = sigma*vector_lin[0]
   sigmav[1] = sigma*vector_lin[1]
   sigmav[2] = sigma*vector_lin[2]
+  #print("sigmav :", sigmav)
 
   gamma = np.zeros((iter_num,3))
   gamma_dot = np.zeros((iter_num,3))
@@ -244,7 +251,7 @@ def geodesicpath_3d(tensor_lin, vector_lin, mask_image, start_coordinate, initia
       geodesicpath_points_y = geodesicpath_points_y[:i-2]
       geodesicpath_points_z = geodesicpath_points_z[:i-2]
       break
-
+  #print("gamma",gamma.shape, gamma)
   if both_directions:
     geodesicpath_points_x = np.concatenate((geodesicpath_points_x[::-1], back_x))
     geodesicpath_points_y = np.concatenate((geodesicpath_points_y[::-1], back_y))
