@@ -2,7 +2,7 @@ import torch
 from torch.utils.data import Dataset
 import SimpleITK as sitk
 from skimage import filters
-
+import numpy as np
 
 class ImageDataset(Dataset):
     def __init__(self, data_dir, sample_name_list):
@@ -21,8 +21,16 @@ class ImageDataset(Dataset):
 
         vector_field = torch.from_numpy(sitk.GetArrayFromImage(sitk.ReadImage(vector_field_path))).permute(2,0,1).to(device)*1000.0
         mask = torch.from_numpy(sitk.GetArrayFromImage(sitk.ReadImage(mask_path))).permute(1,0)
-        boundary_mask = torch.where(torch.from_numpy(filters.laplace(mask))>0,1,0)
+        # Convert mask to numpy for skimage, then back to torch
+        boundary_mask = torch.where(torch.from_numpy(filters.laplace(mask.cpu().numpy()))>0,1,0)
         mask = (mask-boundary_mask).to(device)
+
+        # boundary_mask = (
+        #     torch.from_numpy((filters.laplace(mask.cpu().numpy()) > 0).astype(np.uint8))
+        #     .to(device)
+        # )
+
+        # mask = (mask.to(device) - boundary_mask)
 
         sample = {  'vector_field'  : vector_field,
                     'mask'          : mask.unsqueeze(0)}

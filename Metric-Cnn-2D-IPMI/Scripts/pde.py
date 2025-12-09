@@ -11,7 +11,7 @@ def matrix_exp_2d(A):
     Returns: 
         psd, torch.Tensor
     """
-    I = torch.zeros_like(A, device='cuda')
+    I = torch.zeros_like(A)  # Same device as A automatically
     I[...,0,0] = 1
     I[...,1,1] = 1
     

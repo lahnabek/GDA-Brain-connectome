@@ -1,7 +1,14 @@
-import torch, os, argparse, sys, skimage
+import os, argparse, sys
 sys.path.append('../Packages')
-import data.convert as convert
-import util.tensors as tensors
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
+os.chdir(SCRIPT_DIR)
+sys.path.insert(0, PROJECT_ROOT)
+
+import torch, skimage
+
+import Packages.data.convert as convert
+import Packages.util.tensors as tensors
 import SimpleITK as sitk
 
 from torch.utils.data import DataLoader
@@ -12,9 +19,24 @@ from model import *
 from plot import *
 
 def train(brain_id, input_dir, output_dir, gpu_device, epoch_num, learning_rate, terminating_loss, checkpoint_save_frequency):
-    device = torch.device('cuda')
-    torch.cuda.set_device(gpu_device)
-    torch.set_default_tensor_type('torch.cuda.FloatTensor')
+    # device = torch.device('cuda')
+    # torch.cuda.set_device(gpu_device)
+    # torch.set_default_tensor_type('torch.cuda.FloatTensor')
+    # --- device selection block (safe across CUDA, MPS, CPU) ---
+    if torch.cuda.is_available():
+        device = torch.device(f"cuda:{gpu_device}")
+        torch.cuda.set_device(gpu_device)
+    elif getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
+        # Apple Metal backend
+        device = torch.device("mps")
+    else:
+        device = torch.device("cpu")
+    
+    # Use set_default_dtype instead of deprecated set_default_tensor_type
+    torch.set_default_dtype(torch.float32)
+
+    print("Using device:", device)
+    # -----------------------------------------------------------
 
     output_dir = f'{output_dir}/{brain_id}'
     if not os.path.isdir(output_dir):
@@ -29,7 +51,7 @@ def train(brain_id, input_dir, output_dir, gpu_device, epoch_num, learning_rate,
                     out_activation=None,
                     upsample='nearest')
     model.train()
-    model.cuda()
+    model.to(device)
 
     criterion = torch.nn.MSELoss()
     optimizer = torch.optim.Adadelta(model.parameters(), lr=learning_rate)
@@ -45,7 +67,7 @@ def train(brain_id, input_dir, output_dir, gpu_device, epoch_num, learning_rate,
         epoch_loss_id = 0
 
         for i, batched_id_sample in enumerate(dataloader_id):
-            input_id = batched_id_sample['vector_field'].to(device).float()
+            input_id = batched_id_sample['vector_field'].float().to(device)
             input_id.requires_grad = True
             mask = batched_id_sample['mask'].float()
             u_pred_id = model(input_id)[...,1:146,1:175]

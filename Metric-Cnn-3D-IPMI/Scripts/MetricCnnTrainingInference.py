@@ -7,6 +7,8 @@ os.chdir(SCRIPT_DIR)   # important : remet le working directory au dossier Scrip
 
 sys.path.insert(0, PROJECT_ROOT)
 
+
+
 import torch, argparse, json, glob
 import Packages.data.convert as convert
 import Packages.util.tensors as tensors
@@ -78,7 +80,11 @@ def train(brain_id, input_dir, output_dir, gpu_device=0, epoch_num=10000, learni
 
     output_dir = f'{output_dir}/{brain_id}'
     if not os.path.isdir(output_dir):
-        os.makedirs(output_dir)
+        print("Current working directory:", os.getcwd())
+        print("Output dir arg:", output_dir)
+        os.makedirs(output_dir, exist_ok=True)
+
+       
 
     metrics_dir = f"{output_dir}/metrics"
     os.makedirs(metrics_dir, exist_ok=True)   # dossier où on enregistrera toutes les métriques (intermédiaires)
