@@ -209,7 +209,7 @@ def activation(name):
 
 class DenseED(nn.Module):
     def __init__(self, in_channels, out_channels, imsize, blocks, growth_rate=16,
-                 init_features=48, drop_rate=0, bn_size=8, bottleneck=False, 
+                 init_features=48, drop_rate=0, bn_size=8, bottleneck=True, 
                  out_activation=None, upsample='nearest'):
         """Dense Convolutional Encoder-Decoder Networks.
         Decoder: Upsampling + Conv instead of TransposeConv 

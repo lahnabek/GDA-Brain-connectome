@@ -2,6 +2,9 @@ from lazy_imports import np
 from lazy_imports import torch
 from util import diff
 from data.convert import get_framework
+# import torch
+# device = torch.device("cpu")
+# torch.set_default_device(device)
 
 # def riem_vec_norm(vec, g):
 #   # Compute the Riemannian norm of a vector based on a metric, g
@@ -57,6 +60,7 @@ def get_jacobian_2d(vector_lin, mask, differential_accuracy=2):
     v1, v2 = vector_lin[0], vector_lin[1]
     
     dv = fw.zeros((*vector_lin.shape[1:], 2, 2))
+    # dv = torch.zeros((*vector_lin.shape[1:], 2, 2), device=vector_lin.device)
     dv[...,0,0] = diff.get_first_order_derivative(v1, direction=0, accuracy=differential_accuracy)
     dv[...,0,1] = diff.get_first_order_derivative(v1, direction=1, accuracy=differential_accuracy)
     dv[...,1,0] = diff.get_first_order_derivative(v2, direction=0, accuracy=differential_accuracy)
@@ -87,15 +91,28 @@ def covariant_derivative_2d(vector_lin, metric_mat, mask, differential_accuracy=
     assert vector_lin.shape[0]+1==len(vector_lin.shape), 'vector_lin should follow shape of [2, h, w]'
     assert metric_mat.shape[-1]+2==len(metric_mat.shape), 'metric_mat should follow shape of [h, w, 2, 2]'
     fw, fw_name = get_framework(vector_lin)
+    v1 = vector_lin[0]
+    v2 = vector_lin[1]
     
     dv = get_jacobian_2d(vector_lin, mask, differential_accuracy)
-    dvv = fw.einsum('...ij,j...->i...', dv, vector_lin)
+
+    # dv = dv.to(vector_lin.device)
+    # dvv = fw.einsum('...ij,j...->i...', dv, vector_lin)
+    dvv = torch.zeros_like(vector_lin)
+    # device = vector_lin.device
+    
+    dvv[0] = dv[..., 0, 0] * v1 + dv[..., 0, 1] * v2
+    dvv[1] = dv[..., 1, 0] * v1 + dv[..., 1, 1] * v2
+       
     
     vgammav = fw.zeros_like(vector_lin)
     Gamma1, Gamma2 = get_christoffel_symbol_2d(metric_mat, mask, differential_accuracy)
-    vgammav[0] = fw.einsum('i...,i...->...', vector_lin, fw.einsum('...ij,j...->i...', Gamma1, vector_lin))
-    vgammav[1] = fw.einsum('i...,i...->...', vector_lin, fw.einsum('...ij,j...->i...', Gamma2, vector_lin))
-    
+    # Gamma1 = Gamma1.to(vector_lin.device)
+    # Gamma2 = Gamma2.to(vector_lin.device)
+    # vgammav[0] = fw.einsum('i...,i...->...', vector_lin, fw.einsum('...ij,j...->i...', Gamma1, vector_lin))
+    # vgammav[1] = fw.einsum('i...,i...->...', vector_lin, fw.einsum('...ij,j...->i...', Gamma2, vector_lin))
+    vgammav[0] = Gamma1[...,0,0]*v1*v1 + Gamma1[...,0,1]*v1*v2 + Gamma1[...,1,0]*v2*v1 + Gamma1[...,1,1]*v2*v2
+    vgammav[1] = Gamma2[...,0,0]*v1*v1 + Gamma2[...,0,1]*v1*v2 + Gamma2[...,1,0]*v2*v1 + Gamma2[...,1,1]*v2*v2
     nabla_vv = dvv + vgammav
     
     return nabla_vv
@@ -158,12 +175,22 @@ def covariant_derivative_2d_batch(vector_lin, metric_mat, mask, differential_acc
     fw, fw_name = get_framework(vector_lin)
     
     dv = get_jacobian_2d_batch(vector_lin, mask, differential_accuracy)
-    dvv = fw.einsum('b...ij,bj...->bi...', dv, vector_lin)
+    # dvv = fw.einsum('b...ij,bj...->bi...', dv, vector_lin)
+    # device = vector_lin.device
+    
+    # Extract v1, v2 for batch
+    v1, v2 = vector_lin[:,0], vector_lin[:,1] # line 174
+    # Explicit computation instead of einsum (MPS compatible)
+    dvv = fw.zeros_like(vector_lin)
+    dvv[:,0] = dv[...,0,0] * v1 + dv[...,0,1] * v2
+    dvv[:,1] = dv[...,1,0] * v1 + dv[...,1,1] * v2
     
     vgammav = fw.zeros_like(vector_lin)
     Gamma1, Gamma2 = get_christoffel_symbol_2d_batch(metric_mat, mask, differential_accuracy)
-    vgammav[:,0] = fw.einsum('bi...,bi...->b...', vector_lin, fw.einsum('b...ij,bj...->bi...', Gamma1, vector_lin))
-    vgammav[:,1] = fw.einsum('bi...,bi...->b...', vector_lin, fw.einsum('b...ij,bj...->bi...', Gamma2, vector_lin))
+    # vgammav[:,0] = fw.einsum('bi...,bi...->b...', vector_lin, fw.einsum('b...ij,bj...->bi...', Gamma1, vector_lin))
+    # vgammav[:,1] = fw.einsum('bi...,bi...->b...', vector_lin, fw.einsum('b...ij,bj...->bi...', Gamma2, vector_lin))
+    vgammav[:,0] = Gamma1[...,0,0]*v1*v1 + Gamma1[...,0,1]*v1*v2 + Gamma1[...,1,0]*v2*v1 + Gamma1[...,1,1]*v2*v2
+    vgammav[:,1] = Gamma2[...,0,0]*v1*v1 + Gamma2[...,0,1]*v1*v2 + Gamma2[...,1,0]*v2*v1 + Gamma2[...,1,1]*v2*v2
     
     nabla_vv = dvv + vgammav
     

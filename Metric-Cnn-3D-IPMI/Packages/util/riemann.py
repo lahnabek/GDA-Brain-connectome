@@ -10,6 +10,7 @@ def get_christoffel_symbol_3d(metric_mat, mask, differential_accuracy=2):
         tensor_mat = torch.inverse(metric_mat)
     if fw_name=='numpy':
         tensor_mat = np.linalg.inv(metric_mat)
+        
     
     go11, go12, go13, go21, go22, go23, go31, go32, go33 = metric_mat[...,0,0], metric_mat[...,0,1], metric_mat[...,0,2], metric_mat[...,1,0], metric_mat[...,1,1], metric_mat[...,1,2], metric_mat[...,2,0], metric_mat[...,2,1], metric_mat[...,2,2]
     gi11, gi12, gi13, gi21, gi22, gi23, gi31, gi32, gi33 = tensor_mat[...,0,0], tensor_mat[...,0,1], tensor_mat[...,0,2], tensor_mat[...,1,0], tensor_mat[...,1,1], tensor_mat[...,1,2], tensor_mat[...,2,0], tensor_mat[...,2,1], tensor_mat[...,2,2]
