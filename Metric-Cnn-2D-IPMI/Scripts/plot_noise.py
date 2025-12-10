@@ -142,7 +142,7 @@ def plot_comparison(brain_id, input_dir, noise_levels, checkpoint_path):
     """
     fig, axes = plt.subplots(2, len(noise_levels) + 1, figsize=(4*(len(noise_levels)+1), 8))
     
-    # Load and plot clean
+    # Load and plot clean input
     vector_path = f'{input_dir}/{brain_id}/{brain_id}_vector_field.nhdr'
     vector_clean = convert.read_nhdr(vector_path).permute(2,0,1).float()
     
@@ -151,32 +151,59 @@ def plot_comparison(brain_id, input_dir, noise_levels, checkpoint_path):
     axes[0, 0].set_title('Clean Input (V1)')
     axes[0, 0].axis('off')
     
-    # Plot clean metric
-    clean_metric_path = f'{input_dir}/{brain_id}/{brain_id}_learned_metric_final.nhdr'
-    if os.path.exists(clean_metric_path):
-        metric_clean = sitk.GetArrayFromImage(sitk.ReadImage(clean_metric_path))
-        axes[1, 0].imshow(metric_clean[0], cmap='hot')
-        axes[1, 0].set_title('Clean Metric')
-        axes[1, 0].axis('off')
+    # Compute clean metric using model (same as noise=0.0)
+    metric_clean, _ = inference_with_noise(
+        brain_id, input_dir, checkpoint_path, noise_level=0.0, save_output=False
+    )
+    metric_clean_np = metric_clean.detach().numpy()
+    axes[1, 0].imshow(metric_clean_np[0], cmap='hot')
+    axes[1, 0].set_title('Clean Metric (g₁₁)\nReference')
+    axes[1, 0].axis('off')
+    
+    # Store results for summary
+    results = []
     
     # Plot noisy versions
     for i, noise in enumerate(noise_levels):
-        # Run inference with noise
+        # Run inference with noise (don't save data files when plotting)
         metric, vector_noisy = inference_with_noise(
-            brain_id, input_dir, checkpoint_path, noise, save_output=True
+            brain_id, input_dir, checkpoint_path, noise, save_output=False
         )
+        metric_np = metric.detach().numpy()
+        
+        # Compute error metrics vs clean
+        mae = np.abs(metric_np - metric_clean_np).mean()
+        max_err = np.abs(metric_np - metric_clean_np).max()
+        rmse = np.sqrt(((metric_np - metric_clean_np) ** 2).mean())
+        
+        results.append({
+            'noise': noise,
+            'MAE': mae,
+            'RMSE': rmse,
+            'Max Error': max_err
+        })
         
         # Plot noisy input
         axes[0, i+1].imshow(vector_noisy[0].numpy(), cmap='viridis')
         axes[0, i+1].set_title(f'Noisy Input (σ={noise})')
         axes[0, i+1].axis('off')
         
-        # Plot noisy metric
-        axes[1, i+1].imshow(metric[0].detach().numpy(), cmap='hot')
-        axes[1, i+1].set_title(f'Metric (noise={noise})')
+        # Plot noisy metric with error annotation
+        axes[1, i+1].imshow(metric_np[0], cmap='hot')
+        axes[1, i+1].set_title(f'Metric g₁₁ (σ={noise})\nMAE={mae:.4f}')
         axes[1, i+1].axis('off')
     
     plt.tight_layout()
+    
+    # Print summary table
+    print("\n" + "="*60)
+    print("NUMERICAL COMPARISON (vs Clean Metric)")
+    print("="*60)
+    print(f"{'Noise σ':<10} {'MAE':<12} {'RMSE':<12} {'Max Error':<12}")
+    print("-"*60)
+    for r in results:
+        print(f"{r['noise']:<10.2f} {r['MAE']:<12.6f} {r['RMSE']:<12.6f} {r['Max Error']:<12.6f}")
+    print("="*60)
     
     # Save figure to plots folder
     plots_dir = '../plots'
@@ -185,6 +212,8 @@ def plot_comparison(brain_id, input_dir, noise_levels, checkpoint_path):
     plt.savefig(fig_path, dpi=150, bbox_inches='tight')
     print(f"\nSaved comparison figure to: {fig_path}")
     plt.show()
+    
+    return results
 
 
 if __name__ == '__main__':
